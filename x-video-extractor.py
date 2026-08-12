@@ -24,12 +24,72 @@ def extract_tweet_id(url):
     """Extract tweet ID from various URL formats"""
     if not url:
         return None
-    match = re.search(r'(?:x\.com|twitter\.com)/(?:[^/]+/)?status/(\d+)', url, re.IGNORECASE)
+    match = re.search(r'(?:x\.com|twitter\.com)/(?:[^/]+/)?status(?:es)?/(\d+)', url, re.IGNORECASE)
     if match:
         return match.group(1)
+    # Normalized: platform.twitter.com/embed/Tweet.html?id=<id>
+    embed_match = re.search(r'[?&]id=(\d+)', url)
+    if embed_match and 'platform.twitter.com/embed/' in url:
+        return embed_match.group(1)
     if re.match(r'^\d{15,25}$', url.strip()):
         return url.strip()
     return None
+
+def resolve_redirects(short_url):
+    """
+    v176: Follow redirect chains to resolve short URLs to real tweet URLs.
+    Handles:
+      - t.co short links (HTTP + JS redirects → x.com/.../status/ID)
+      - twitter.com/i/redirect URLs
+      - Any other redirect that ends at a tweet status URL
+
+    Returns the final resolved URL. If no redirect occurs or resolution fails,
+    returns the original URL.
+    """
+    print(f"[*] Resolving URL: {short_url}")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
+    try:
+        session = requests.Session()
+        # allow_redirects=True follows the full HTTP redirect chain automatically
+        response = session.head(short_url, headers=headers, allow_redirects=True, timeout=10)
+        real_url = response.url
+        if real_url and real_url != short_url:
+            print(f"[+] HTTP redirect resolved: {real_url}")
+            return real_url
+    except Exception as e:
+        print(f"[-] HTTP redirect failed ({e}), trying HTML parsing")
+
+    # If HTTP redirect didn't work (e.g., t.co uses JS redirect), try fetching
+    # the page and parsing the canonical URL or embedded tweet URL.
+    try:
+        response = requests.get(short_url, headers=headers, timeout=10, allow_redirects=True)
+        if response.status_code == 200:
+            html = response.text
+            # Try canonical URL
+            canonical_match = re.search(r'<link[^>]*rel=["\']canonical["\'][^>]*href=["\']([^"\']+)["\']', html, re.IGNORECASE)
+            if canonical_match and re.search(r'x\.com|twitter\.com', canonical_match.group(1), re.IGNORECASE):
+                print(f"[+] Canonical URL resolved: {canonical_match.group(1)}")
+                return canonical_match.group(1)
+            # Try meta refresh
+            refresh_match = re.search(r'<meta[^>]*http-equiv=["\']refresh["\'][^>]*content=["\'][^"\']*url=([^"\']+)["\']', html, re.IGNORECASE)
+            if refresh_match:
+                refresh_url = refresh_match.group(1).strip()
+                if re.search(r'x\.com|twitter\.com', refresh_url, re.IGNORECASE):
+                    print(f"[+] Meta refresh resolved: {refresh_url}")
+                    return refresh_url
+            # Try finding tweet URL in the HTML
+            tweet_match = re.search(r'(?:x\.com|twitter\.com)/(?:[^/]+/)?status(?:es)?/(\d+)', html, re.IGNORECASE)
+            if tweet_match:
+                resolved = f"https://x.com/i/status/{tweet_match.group(1)}"
+                print(f"[+] Tweet URL extracted from HTML: {resolved}")
+                return resolved
+    except Exception as e:
+        print(f"[-] HTML parsing failed: {e}")
+
+    return short_url
 
 def extract_from_syndication(tweet_id):
     """Extract metadata from Twitter's public Syndication API"""
@@ -58,7 +118,10 @@ def extract_from_syndication(tweet_id):
 
             if "video_info" in media:
                 if "duration_millis" in media["video_info"]:
-                    duration = round(media["video_info"]["duration_millis"] / 1000, 2)
+                    # v170: Round to integer seconds — the VideoManager form
+                    # expects an integer for the `duration` field, and HTML5
+                    # <video> doesn't support fractional durations either.
+                    duration = round(media["video_info"]["duration_millis"] / 1000)
 
                 for v in media["video_info"].get("variants", []):
                     if v.get("content_type") == "mp4" and v.get("url"):
@@ -77,8 +140,27 @@ def extract_from_syndication(tweet_id):
         if not duration and "video" in data:
             duration = data["video"].get("duration")
 
-        # Sort by bitrate (highest first)
-        video_formats.sort(key=lambda x: int(x.get("resolution", "0").replace("kbps", "")) if "kbps" in x.get("resolution", "") else 0, reverse=True)
+        # v177: Sort to prefer .mp4 (with audio) over .m3u8 (video-only on Twitter).
+        # Twitter's .m3u8 streams are often video-only (AVC video, no audio),
+        # while .mp4 variants contain both audio + video. Putting .mp4 first
+        # ensures the player picks the format with sound.
+        def format_priority(fmt):
+            url = fmt.get("url", "").lower().split("?")[0]
+            is_mp4 = url.endswith(".mp4") or ".mp4" in url
+            # .mp4 → priority 0 (first), .m3u8 → priority 1 (after)
+            return (0 if is_mp4 else 1,)
+
+        # Sort by (1) extension (.mp4 first), then (2) bitrate (highest first)
+        def bitrate_key(fmt):
+            res = fmt.get("resolution", "0")
+            if "kbps" in res:
+                try:
+                    return int(res.replace("kbps", ""))
+                except:
+                    return 0
+            return 0
+
+        video_formats.sort(key=lambda x: (format_priority(x), -bitrate_key(x)))
 
         return {
             "tweetId": tweet_id,
@@ -115,7 +197,20 @@ def extract_with_ytdlp(tweet_url):
                 for f in info['formats']:
                     ext = f.get('ext')
                     vcodec = f.get('vcodec', 'none')
+                    acodec = f.get('acodec', 'none')
 
+                    # v177: Only include formats with VIDEO codec (skip audio-only)
+                    if vcodec == 'none':
+                        continue
+
+                    # v177: Skip .m3u8 (HLS) formats when we have .mp4 alternatives.
+                    # Twitter's .m3u8 streams are often video-only (no audio),
+                    # while .mp4 variants contain both audio + video.
+                    # Only include .m3u8 if it has an audio codec (rare on Twitter).
+                    if ext == 'm3u8' and acodec == 'none':
+                        continue
+
+                    # Prefer .mp4 with both video + audio
                     if ext == 'mp4' and vcodec != 'none':
                         res_note = f.get('format_note') or f.get('resolution') or 'Standard'
                         h = f.get('height', 'N/A')
@@ -129,6 +224,15 @@ def extract_with_ytdlp(tweet_url):
                                 "width": w,
                                 "url": url
                             })
+
+                # v177: Sort formats to prefer ones with audio (acodec != 'none')
+                # and higher resolution. .mp4 with audio comes first.
+                def format_priority(fmt):
+                    url = fmt.get("url", "").lower().split("?")[0]
+                    is_mp4 = url.endswith(".mp4") or ".mp4" in url
+                    return 0 if is_mp4 else 1
+
+                formats.sort(key=lambda x: format_priority(x))
 
             return {
                 "title": title,
@@ -154,14 +258,27 @@ def extract():
     if not url:
         return jsonify({"error": "Missing url parameter"}), 400
 
+    # v176: Resolve short links (t.co, redirect URLs) → real tweet URL.
+    # This is critical because Syndication API + yt-dlp need the real tweet ID.
+    # Without this, t.co short links fail with "Invalid X/Twitter URL".
+    original_url = url
+    url = resolve_redirects(url)
+
     tweet_id = extract_tweet_id(url)
     if not tweet_id:
-        return jsonify({"error": "Invalid X/Twitter URL"}), 400
+        return jsonify({
+            "error": "Invalid X/Twitter URL",
+            "originalUrl": original_url,
+            "resolvedUrl": url if url != original_url else None
+        }), 400
 
     # Step 1: Try Syndication API (fast, no dependencies)
     result = extract_from_syndication(tweet_id)
 
-    # Step 2: Fallback to yt-dlp if Syndication failed or no formats found
+    # Step 2: Fallback to yt-dlp if Syndication failed or no formats found.
+    # Pass the RESOLVED URL (not the original) — yt-dlp also follows redirects
+    # internally, but passing the resolved URL saves a round-trip and ensures
+    # we hit the right tweet.
     if not result or not result.get("formats"):
         print("[*] Trying yt-dlp fallback...")
         ytdlp_result = extract_with_ytdlp(url)
