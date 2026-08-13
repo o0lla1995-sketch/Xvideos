@@ -204,10 +204,20 @@ def extract_from_syndication(tweet_id):
 
 def extract_with_ytdlp(tweet_url):
     """
-    v179: Use yt-dlp to extract .mp4 video formats (with audio).
-    Simple filter that matches the user's reference code exactly:
-      - Only include formats where ext == 'mp4' and vcodec != 'none'
-      - This is PROVEN to work (returns 2 .mp4 URLs for the test tweet).
+    v180: Use yt-dlp to extract .mp4 video formats (with audio).
+
+    KEY INSIGHT (verified by inspecting yt-dlp output):
+      - yt-dlp returns `ext='mp4'` for ALL Twitter formats â€” both real .mp4
+        URLs AND .m3u8 HLS streams.
+      - The real .mp4 URLs have `vcodec='none'` (yt-dlp puts codec info only
+        on the .m3u8 parent format).
+      - So the old filter `ext=='mp4' && vcodec!='none'` SKIPS the real .mp4
+        URLs and keeps only the video-only .m3u8 streams â†’ SILENT playback.
+
+    THE FIX: Detect .mp4 vs .m3u8 by checking the URL EXTENSION
+    (`url.endswith('.mp4')`), not yt-dlp's `ext` field. Only include
+    formats whose URL ends in `.mp4` â€” these are the real direct .mp4
+    files with both audio + video.
 
     Returns formats sorted by height descending (highest quality first).
     All returned formats are .mp4 with audio + video.
@@ -232,27 +242,34 @@ def extract_with_ytdlp(tweet_url):
             duration = info.get('duration')
             thumbnail = info.get('thumbnail')
 
-            # v179: SIMPLE filter â€” match the user's reference code exactly.
+            # v180: ONLY include formats whose URL ends in .mp4.
+            # SKIP all .m3u8 streams (Twitter's are video-only â†’ silent).
             formats = []
             if 'formats' in info:
                 for f in info['formats']:
-                    ext = f.get('ext')
-                    vcodec = f.get('vcodec', 'none')
+                    url = f.get('url') or ''
+                    if not url:
+                        continue
 
-                    if ext == 'mp4' and vcodec != 'none':
-                        res = f.get('format_note') or f.get('resolution') or 'Standard'
-                        h = f.get('height', 'N/A')
-                        w = f.get('width', 'N/A')
-                        url = f.get('url')
+                    url_clean = url.split('?')[0].lower()
+                    is_mp4 = url_clean.endswith('.mp4')
 
-                        if url and not any(d['url'] == url for d in formats):
-                            formats.append({
-                                "resolution": res,
-                                "height": h,
-                                "width": w,
-                                "url": url,
-                                "ext": "mp4",
-                            })
+                    if not is_mp4:
+                        continue  # SKIP .m3u8 (and any other non-mp4 format)
+
+                    res = f.get('format_note') or f.get('resolution') or \
+                          f'{f.get("width", "?")}x{f.get("height", "?")}'
+                    h = f.get('height', 'N/A')
+                    w = f.get('width', 'N/A')
+
+                    if not any(d['url'] == url for d in formats):
+                        formats.append({
+                            "resolution": res,
+                            "height": h,
+                            "width": w,
+                            "url": url,
+                            "ext": "mp4",
+                        })
 
             # Sort by height descending (highest quality first)
             formats.sort(key=lambda x: -(x.get('height', 0) if isinstance(x.get('height'), (int, float)) else 0))
