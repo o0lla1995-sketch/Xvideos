@@ -1,5 +1,5 @@
 # ════════════════════════════════════════════════════════════════════════════════
-# X/Twitter Video Extractor — Standalone Python Script (v180 - Clean Variables Cookies)
+# X/Twitter Video Extractor — Standalone Python Script (v181 - Fixed Title & Variables Cookies)
 # ════════════════════════════════════════════════════════════════════════════════
 #
 # USAGE:
@@ -25,7 +25,6 @@ except ImportError:
 # ════════════════════════════════════════════════════════════════════════════════
 # CONFIGURATION & COOKIES VARIABLES
 # ════════════════════════════════════════════════════════════════════════════════
-# ضع قيم الكوكيز الخاصة بك هنا كمتغيرات واضحة
 TWITTER_AUTH_TOKEN = "a9abb3a133a3371932b32432b165e7de9dd9be2f"
 TWITTER_CT0        = "d1a04233384503d51b42883efab12997467da9b1cdf307d1ad66198d9aaabfac6e61573247b3822880e72ce36469fd840d95e59b44e74f7578b06679bf76a0a823c16d380176cfc85163909558301bae"
 
@@ -100,7 +99,7 @@ def resolve_redirects(short_url):
 
 
 def extract_from_syndication(tweet_id):
-    """استخراج بيانات التغريدة من واجهة Syndication API مع تمرير الكوكيز"""
+    """استخراج بيانات التغريدة مع العنوان من واجهة Syndication API مع تمرير الكوكيز"""
     api_url = f"https://cdn.syndication.twimg.com/tweet-item?id={tweet_id}&lang=en"
     cookie_header_str = f"auth_token={TWITTER_AUTH_TOKEN}; ct0={TWITTER_CT0}"
     
@@ -175,7 +174,7 @@ def extract_from_syndication(tweet_id):
 
 
 def extract_with_ytdlp(tweet_url):
-    """استخدام yt-dlp مع ملف الكوكيز المُولّد من المتغيرات لاستخراج التغريدات الخاصة"""
+    """استخدام yt-dlp مع ملف الكوكيز المُولّد لاستخراج العنوان والروابط"""
     try:
         import yt_dlp
     except ImportError:
@@ -254,7 +253,7 @@ def get_x_video_resolved(short_url):
     tweet_id = extract_tweet_id(real_url) or extract_tweet_id(short_url)
     if not tweet_id:
         print(f"[-] فشل استخراج معرف التغريدة")
-        return None, None, []
+        return None, None, None, []
 
     video_formats = []
     thumbnail_url = None
@@ -279,6 +278,8 @@ def get_x_video_resolved(short_url):
     else:
         ytdlp_result = extract_with_ytdlp(real_url)
         if ytdlp_result and ytdlp_result.get("formats"):
+            if title == "Untitled":
+                title = ytdlp_result.get("title", "Untitled")
             existing_urls = {f["url"] for f in video_formats}
             for fmt in ytdlp_result["formats"]:
                 if fmt["url"] not in existing_urls:
@@ -287,7 +288,7 @@ def get_x_video_resolved(short_url):
             video_formats.sort(key=lambda x: (0 if x.get("ext") == "mp4" else 1,
                                              -x.get("height", 0) if isinstance(x.get("height"), (int, float)) else 0))
 
-    return tweet_id, thumbnail_url, video_formats
+    return tweet_id, title, thumbnail_url, video_formats
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -301,10 +302,11 @@ def _cli_test():
     else:
         target_url = sys.argv[1]
 
-    tweet_id, thumbnail, formats = get_x_video_resolved(target_url)
+    tweet_id, title, thumbnail, formats = get_x_video_resolved(target_url)
 
     print("\n" + "=" * 60)
     print(f" المعرّف: {tweet_id}")
+    print(f" العنوان: {title}")
     print("=" * 60)
     print(f"\n[🖼️] رابط صورة الخلفية:\n{thumbnail}")
 
@@ -352,7 +354,7 @@ def _run_flask_server():
                 "resolvedUrl": resolved_url
             }), 400
 
-        tweet_id, thumbnail, formats = get_x_video_resolved(resolved_url)
+        tweet_id, title, thumbnail, formats = get_x_video_resolved(resolved_url)
 
         if not formats:
             return jsonify({"error": "Could not extract video data"}), 404
@@ -360,6 +362,7 @@ def _run_flask_server():
         result = {
             "ok": True,
             "tweetId": tweet_id,
+            "title": title,
             "thumbnail": thumbnail,
             "formats": formats,
             "source": "python-standalone-variable-cookie-server"
@@ -369,7 +372,7 @@ def _run_flask_server():
 
     @app.route('/health', methods=['GET'])
     def health():
-        return jsonify({"ok": True, "service": "X/Twitter Video Extraction Server v180 (Variable Cookies)"})
+        return jsonify({"ok": True, "service": "X/Twitter Video Extraction Server v181 (Title & Cookies)"})
 
     port = int(os.environ.get('PORT', 5000))
     print(f"[*] Starting X/Twitter Extraction Server on port {port}...")
