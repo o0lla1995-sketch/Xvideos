@@ -1,10 +1,9 @@
 # ════════════════════════════════════════════════════════════════════════════════
-# X/Twitter Video Extractor — Standalone Python Script (v181 - Fixed Title & Variables Cookies)
+# X/Twitter Video Extractor — Standalone Python Script (v182 - Secure Render Env Cookies)
 # ════════════════════════════════════════════════════════════════════════════════
 #
 # USAGE:
 #   1. As a script (test from CLI):
-#      pip install -q --upgrade yt-dlp requests flask flask-cors
 #      python x-video-extractor-standalone.py <tweet_url>
 #
 #   2. As a Flask server:
@@ -23,16 +22,21 @@ except ImportError:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# CONFIGURATION & COOKIES VARIABLES
+# SECURE CONFIGURATION (Environment Variables for Render)
 # ════════════════════════════════════════════════════════════════════════════════
-TWITTER_AUTH_TOKEN = "a9abb3a133a3371932b32432b165e7de9dd9be2f"
-TWITTER_CT0        = "d1a04233384503d51b42883efab12997467da9b1cdf307d1ad66198d9aaabfac6e61573247b3822880e72ce36469fd840d95e59b44e74f7578b06679bf76a0a823c16d380176cfc85163909558301bae"
+# سيقوم السكربت بقراءة الكوكيز من بيئة التشغيل (Render Environment Variables)
+# وإذا لم تجدها (للاختبار المحلي)، يمكنك وضع القيم الاحتياطية هنا أو تركها فارغة
+TWITTER_AUTH_TOKEN = os.environ.get("TWITTER_AUTH_TOKEN", "ضع_رمز_auth_token_هنا_إن_أردت_محلياً")
+TWITTER_CT0        = os.environ.get("TWITTER_CT0", "ضع_رمز_ct0_هنا_إن_أردت_محلياً")
 
 COOKIES_FILE_PATH = "cookies.txt"
 
 def setup_cookies_file():
-    """توليد ملف cookies.txt تلقائياً بالصيغة المعيارية الصحيحة بناءً على المتغيرات بالأعلى"""
+    """توليد ملف cookies.txt تلقائياً من متغيرات البيئة الآمنة"""
     try:
+        if not TWITTER_AUTH_TOKEN or "ضع_رمز" in TWITTER_AUTH_TOKEN:
+            return None
+            
         netscape_content = (
             "# Netscape HTTP Cookie File\n"
             f".x.com\tTRUE\t/\tTRUE\t1800000000\tauth_token\t{TWITTER_AUTH_TOKEN}\n"
@@ -99,15 +103,16 @@ def resolve_redirects(short_url):
 
 
 def extract_from_syndication(tweet_id):
-    """استخراج بيانات التغريدة مع العنوان من واجهة Syndication API مع تمرير الكوكيز"""
+    """استخراج بيانات التغريدة مع العنوان من واجهة Syndication API مع الكوكيز الآمنة"""
     api_url = f"https://cdn.syndication.twimg.com/tweet-item?id={tweet_id}&lang=en"
-    cookie_header_str = f"auth_token={TWITTER_AUTH_TOKEN}; ct0={TWITTER_CT0}"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json",
-        "Cookie": cookie_header_str
+        "Accept": "application/json"
     }
+    
+    if TWITTER_AUTH_TOKEN and "ضع_رمز" not in TWITTER_AUTH_TOKEN:
+        headers["Cookie"] = f"auth_token={TWITTER_AUTH_TOKEN}; ct0={TWITTER_CT0}"
 
     try:
         response = requests.get(api_url, headers=headers, timeout=10)
@@ -165,7 +170,7 @@ def extract_from_syndication(tweet_id):
             "duration": duration,
             "thumbnail": thumbnail_url,
             "formats": video_formats,
-            "source": "syndication-api-variable-cookie"
+            "source": "syndication-api-env-cookie"
         }
 
     except Exception as e:
@@ -174,7 +179,7 @@ def extract_from_syndication(tweet_id):
 
 
 def extract_with_ytdlp(tweet_url):
-    """استخدام yt-dlp مع ملف الكوكيز المُولّد لاستخراج العنوان والروابط"""
+    """استخدام yt-dlp مع ملف الكوكيز الآمن"""
     try:
         import yt_dlp
     except ImportError:
@@ -234,7 +239,7 @@ def extract_with_ytdlp(tweet_url):
                 "duration": duration,
                 "thumbnail": thumbnail,
                 "formats": formats,
-                "source": "yt-dlp-variable-cookie"
+                "source": "yt-dlp-env-cookie"
             }
 
     except Exception as e:
@@ -268,7 +273,7 @@ def get_x_video_resolved(short_url):
         video_formats = syndication_result.get("formats", [])
 
     if not video_formats:
-        print("[*] Syndication API فشل، استخدام yt-dlp مع المتغيرات...")
+        print("[*] Syndication API فشل، استخدام yt-dlp...")
         ytdlp_result = extract_with_ytdlp(real_url)
         if ytdlp_result:
             video_formats = ytdlp_result.get("formats", [])
@@ -365,14 +370,14 @@ def _run_flask_server():
             "title": title,
             "thumbnail": thumbnail,
             "formats": formats,
-            "source": "python-standalone-variable-cookie-server"
+            "source": "python-standalone-env-cookie-server"
         }
 
         return jsonify(result)
 
     @app.route('/health', methods=['GET'])
     def health():
-        return jsonify({"ok": True, "service": "X/Twitter Video Extraction Server v181 (Title & Cookies)"})
+        return jsonify({"ok": True, "service": "X/Twitter Video Extraction Server v182 (Secure Env Cookies)"})
 
     port = int(os.environ.get('PORT', 5000))
     print(f"[*] Starting X/Twitter Extraction Server on port {port}...")
