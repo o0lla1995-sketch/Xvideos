@@ -1,7 +1,3 @@
-# ════════════════════════════════════════════════════════════════════════════════
-# X/Twitter Video Extractor — Vercel Python Serverless Function (index.py)
-# ════════════════════════════════════════════════════════════════════════════════
-
 import re
 import os
 from flask import Flask, request, jsonify
@@ -15,15 +11,10 @@ except ImportError:
 app = Flask(__name__)
 CORS(app)
 
-# ════════════════════════════════════════════════════════════════════════════════
-# SECURE CONFIGURATION (Vercel Environment Variables)
-# ════════════════════════════════════════════════════════════════════════════════
 TWITTER_AUTH_TOKEN = os.environ.get("TWITTER_AUTH_TOKEN", "")
 TWITTER_CT0        = os.environ.get("TWITTER_CT0", "")
 
-
 def extract_tweet_id(url):
-    """استخراج معرف التغريدة من مختلف صيغ الروابط"""
     if not url:
         return None
     match = re.search(r'(?:x\.com|twitter\.com)/(?:[^/]+/)?status(?:es)?/(\d+)', url, re.IGNORECASE)
@@ -36,9 +27,7 @@ def extract_tweet_id(url):
         return url.strip()
     return None
 
-
 def resolve_redirects(short_url):
-    """تتبع روابط التوجيه المختصرة للوصول إلى الرابط الحقيقي للتغريدة"""
     if not requests:
         return short_url
     
@@ -70,14 +59,11 @@ def resolve_redirects(short_url):
 
     return short_url
 
-
 def extract_from_syndication(tweet_id):
-    """استخراج بيانات التغريدة والمدة من واجهة Syndication API"""
     if not requests:
         return None
 
     api_url = f"https://cdn.syndication.twimg.com/tweet-item?id={tweet_id}&lang=en"
-    
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "application/json"
@@ -139,13 +125,10 @@ def extract_from_syndication(tweet_id):
             "formats": video_formats,
             "source": "vercel-python-syndication"
         }
-
     except Exception:
         return None
 
-
 def extract_from_html_page(tweet_url, tweet_id):
-    """محاولة احتياطية لسحب البيانات من صفحة الـ HTML المباشرة"""
     if not requests:
         return None
 
@@ -159,7 +142,6 @@ def extract_from_html_page(tweet_url, tweet_id):
             return None
 
         html = response.text
-
         title_match = re.search(r'<meta[^>]*property=["\']og:title["'][^>]*content=["\']([^"\']+)["\']', html, re.IGNORECASE)
         title = title_match.group(1) if title_match else "Untitled"
 
@@ -210,11 +192,6 @@ def extract_from_html_page(tweet_url, tweet_id):
     except Exception:
         return None
 
-
-# ════════════════════════════════════════════════════════════════════════════════
-# FLASK ROUTES
-# ════════════════════════════════════════════════════════════════════════════════
-
 @app.route('/extract', methods=['GET', 'POST'])
 def extract():
     target_url = request.args.get('url') if request.method == 'GET' else (request.get_json() or {}).get('url')
@@ -229,7 +206,6 @@ def extract():
         return jsonify({"error": "Invalid X/Twitter URL", "originalUrl": target_url}), 400
 
     result = extract_from_syndication(tweet_id)
-
     if not result or not result.get("formats"):
         result = extract_from_html_page(resolved_url, tweet_id)
 
@@ -250,7 +226,6 @@ def extract():
     }
 
     return jsonify(final_response)
-
 
 @app.route('/health', methods=['GET'])
 def health():
