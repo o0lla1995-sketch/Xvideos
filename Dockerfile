@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # فتح المنفذ الذي يعمل عليه تطبيق Flask
-EXPOSE 5000
+EXPOSE 3000
 
 # أمر تشغيل السكربت تلقائياً في وضع الخادم
 CMD ["python", "x-video-extractor.py", "--server"]
