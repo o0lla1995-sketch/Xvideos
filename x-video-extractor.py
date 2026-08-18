@@ -1,5 +1,5 @@
 # ════════════════════════════════════════════════════════════════════════════════
-# X/Twitter Video Extractor — Standalone Python Script (v183 - Secure Env Cookies & Duration)
+# X/Twitter Video Extractor — Standalone Python Script (v184 - Secure Env Cookies, Duration & Clean Title)
 # ════════════════════════════════════════════════════════════════════════════════
 #
 # USAGE:
@@ -49,6 +49,21 @@ def setup_cookies_file():
 
 
 # ════════════════════════════════════════════════════════════════════════════════
+# HELPER FUNCTIONS
+# ════════════════════════════════════════════════════════════════════════════════
+
+def clean_title(text):
+    """حذف الروابط وتنظيف المسافات من عنوان التغريدة"""
+    if not text:
+        return "Untitled"
+    # حذف جميع روابط HTTP / HTTPS / t.co
+    text_no_urls = re.sub(r'https?://\S+', '', text)
+    # تنظيف المساحات والأسطر الزائدة
+    cleaned = re.sub(r'\s+', ' ', text_no_urls).strip()
+    return cleaned if cleaned else "Untitled"
+
+
+# ════════════════════════════════════════════════════════════════════════════════
 # CORE EXTRACTION FUNCTIONS
 # ════════════════════════════════════════════════════════════════════════════════
 
@@ -71,7 +86,8 @@ def resolve_redirects(short_url):
     """تتبع روابط التوجيه المختصرة للوصول إلى الرابط الحقيقي للتغريدة"""
     print(f"[*] Resolving URL: {short_url}")
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9"
     }
 
     try:
@@ -106,7 +122,8 @@ def extract_from_syndication(tweet_id):
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json"
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9"
     }
     
     if TWITTER_AUTH_TOKEN:
@@ -118,7 +135,9 @@ def extract_from_syndication(tweet_id):
             return None
 
         data = response.json()
-        video_title = data.get("text", "Untitled")
+        raw_title = data.get("text", "Untitled")
+        video_title = clean_title(raw_title)
+        
         duration = None
         thumbnail_url = None
         video_formats = []
@@ -193,6 +212,10 @@ def extract_with_ytdlp(tweet_url):
         'no_warnings': True,
         'skip_download': True,
         'quiet': True,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+        }
     }
 
     if cookie_file and os.path.exists(cookie_file):
@@ -202,7 +225,8 @@ def extract_with_ytdlp(tweet_url):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(tweet_url, download=False)
 
-            title = info.get('title') or info.get('description', 'Untitled')
+            raw_title = info.get('title') or info.get('description', 'Untitled')
+            title = clean_title(raw_title)
             
             raw_duration = info.get('duration')
             duration = None
@@ -390,7 +414,7 @@ def _run_flask_server():
 
     @app.route('/health', methods=['GET'])
     def health():
-        return jsonify({"ok": True, "service": "X/Twitter Video Extraction Server v183 (Duration & Secure Env Cookies)"})
+        return jsonify({"ok": True, "service": "X/Twitter Video Extraction Server v184 (Duration, Secure Env Cookies & Clean Title)"})
 
     port = int(os.environ.get('PORT', 5000))
     print(f"[*] Starting X/Twitter Extraction Server on port {port}...")
