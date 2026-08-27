@@ -1,14 +1,4 @@
-# ════════════════════════════════════════════════════════════════════════════════
-# X/Twitter Video Extractor — Standalone Python Script (v184 - Secure Env Cookies, Duration & Clean Title)
-# ════════════════════════════════════════════════════════════════════════════════
-#
-# USAGE:
-#   1. As a script (test from CLI):
-#      python x-video-extractor-standalone.py <tweet_url>
-#
-#   2. As a Flask server:
-#      python x-video-extractor-standalone.py --server
-# ════════════════════════════════════════════════════════════════════════════════
+
 
 import re
 import os
