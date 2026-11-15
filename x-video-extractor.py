@@ -129,7 +129,9 @@ def resolve_redirects(short_url):
 # ════════════════════════════════════════════════════════════════════════════════
 
 def extract_from_syndication(tweet_id):
-    api_url = f"https://cdn.syndication.twimg.com/tweet-item?id={tweet_id}&lang=en"
+    # v2.1: Twitter DEPRECATED the 'tweet-item' endpoint (returns 404 now).
+    # The new endpoint is 'tweet-result' — same data, different URL.
+    api_url = f"https://cdn.syndication.twimg.com/tweet-result?id={tweet_id}&token=x"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "application/json",
