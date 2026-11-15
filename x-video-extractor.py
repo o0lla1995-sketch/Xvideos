@@ -165,7 +165,8 @@ def extract_from_syndication(tweet_id):
                     duration = round(media["video_info"]["duration_millis"] / 1000)
 
                 for v in media["video_info"].get("variants", []):
-                    if v.get("content_type") == "mp4" and v.get("url"):
+                    # v2.1: Fix content_type check — the API returns "video/mp4" not "mp4"
+                    if v.get("content_type") == "video/mp4" and v.get("url"):
                         bitrate = v.get("bitrate", 0)
                         video_formats.append({
                             "resolution": f"{round(bitrate / 1000)}kbps" if bitrate else "Standard",
