@@ -439,97 +439,69 @@ async def root():
 # recent tweets from the authenticated user's timeline.
 # ════════════════════════════════════════════════════════════════════════════════
 
-def fetch_home_timeline(count=20):
-    """Fetch the home timeline using Twitter GraphQL API with cookies."""
+def fetch_home_timeline(count=50):
+    """Fetch the home timeline using Twitter v2 API with cookies.
+    
+    Uses api.twitter.com/2/timeline/home.json — the SAME endpoint x.com
+    uses to load the home page. Returns REAL recent tweets from accounts
+    the user follows (in their language, matching their interests).
+    """
     if not TWITTER_AUTH_TOKEN:
         return {"error": "No TWITTER_AUTH_TOKEN configured"}
 
-    headers = {
-        "Authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhEQvF98kIBqXJ5b3Jj0V7m",
-        "Cookie": f"auth_token={TWITTER_AUTH_TOKEN}; ct0={TWITTER_CT0}",
-        "x-csrf-token": TWITTER_CT0,
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Content-Type": "application/json",
-        "Accept": "*/*",
-        "Referer": "https://x.com/home",
-        "Origin": "https://x.com",
-    }
+    # CORRECT bearer token from x.com main.js (v455.18)
+    BEARER = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
 
-    # GraphQL variables + features for HomeTimeline
-    variables = json.dumps({
-        "count": count,
-        "includePromotedContent": True,
-        "latestControlAvailable": True,
-        "requestContext": "launch",
-        "withCommunity": True,
-    })
-    features = json.dumps({
-        "rweb_tipjar_consumption_enabled": True,
-        "responsive_web_graphql_exclude_directive_enabled": True,
-        "verified_phone_label_enabled": False,
-        "creator_subscriptions_tweet_preview_ratio_enabled": False,
-        "responsive_web_graphql_timeline_navigation_enabled": True,
-        "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
-        "communities_web_enable_tweet_community_results_fetch": True,
-        "c9s_tweet_anatomy_moderator_badge_enabled": True,
-        "articles_preview_enabled": True,
-        "responsive_web_edit_tweet_api_enabled": True,
-        "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
-        "view_counts_everywhere_api_enabled": True,
-        "longform_notetweets_consumption_enabled": True,
-        "responsive_web_twitter_article_tweet_consumption_enabled": True,
-        "tweet_awards_web_tipping_enabled": False,
-        "creator_subscriptions_quote_tweet_preview_enabled": False,
-        "freedom_of_speech_not_reach_fetch_enabled": True,
-        "standardized_nudges_misinfo": True,
-        "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": True,
-        "rweb_video_timestamps_enabled": True,
-        "longform_notetweets_rich_text_read_enabled": True,
-        "longform_notetweets_inline_media_enabled": True,
-        "responsive_web_enhance_cards_enabled": False,
-    })
+    headers = {
+        "authorization": f"Bearer {BEARER}",
+        "cookie": f"auth_token={TWITTER_AUTH_TOKEN}; ct0={TWITTER_CT0}",
+        "x-csrf-token": TWITTER_CT0,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "x-twitter-auth-type": "OAuth2Session",
+        "x-twitter-active-user": "yes",
+        "x-twitter-client-language": "en",
+        "content-type": "application/json",
+    }
 
     try:
         resp = requests.get(
-            "https://x.com/i/api/graphql/zUOPRTMp9KrYvxOqXJdYSw/HomeTimeline",
+            "https://api.twitter.com/2/timeline/home.json",
             headers=headers,
-            params={"variables": variables, "features": features},
+            params={"count": count, "include_entities": 1, "tweet_mode": "extended"},
             timeout=15,
         )
         if resp.status_code != 200:
             return {"error": f"Twitter API returned {resp.status_code}"}
 
         data = resp.json()
-        # Extract tweet entries from the timeline
-        instructions = (
-            data.get("data", {})
-            .get("home", {})
-            .get("home_timeline_urt", {})
-            .get("instructions", [])
-        )
+        tweets = data.get("globalObjects", {}).get("tweets", {})
+        users = data.get("globalObjects", {}).get("users", {})
 
+        # Build tweet results in the same format as GraphQL
         tweet_entries = []
-        for instruction in instructions:
-            if instruction.get("type") == "TimelineAddEntries":
-                for entry in instruction.get("entries", []):
-                    if entry.get("entryId", "").startswith("tweet-"):
-                        tweet_data = (
-                            entry.get("content", {})
-                            .get("itemContent", {})
-                            .get("tweet_results", {})
-                            .get("result", {})
-                        )
-                        if tweet_data:
-                            tweet_entries.append(tweet_data)
+        for tid, t in tweets.items():
+            uid = t.get("user_id_str", "")
+            user = users.get(uid, {})
+            ext = t.get("extended_entities", {}).get("media", [])
+            has_video = any(m.get("type") == "video" for m in ext)
 
+            if has_video:
+                tweet_entries.append({
+                    "rest_id": tid,
+                    "legacy": {
+                        "full_text": t.get("full_text", ""),
+                        "screen_name": user.get("screen_name", "?"),
+                    },
+                    "extended_entities": {"media": ext},
+                })
         return tweet_entries
     except Exception as e:
         return {"error": str(e)}
 
 
 def extract_video_from_tweet_result(tweet_result):
-    """Extract video data from a GraphQL tweet result object."""
-    # The tweet might be wrapped in a TweetWithVisibilityResults type
+    """Extract video data from a tweet result object (works with both GraphQL and v2 API formats)."""
+    # GraphQL format: tweet might be wrapped in TweetWithVisibilityResults
     if tweet_result.get("__typename") == "TweetWithVisibilityResults":
         tweet = tweet_result.get("tweet", {})
     else:
@@ -539,33 +511,37 @@ def extract_video_from_tweet_result(tweet_result):
     if not tweet_id:
         return None
 
-    # Get extended entities (contains video info)
+    # Get media from extended_entities
     ext_entities = tweet.get("extended_entities", {})
     media_list = ext_entities.get("media", [])
+
+    # For v2 API format: screen_name is in legacy
+    legacy = tweet.get("legacy", {})
+    username = legacy.get("screen_name", "")
+    
+    # For GraphQL format: screen_name is in core.user_results
+    if not username:
+        user_result = tweet.get("core", {}).get("user_results", {}).get("result", {})
+        username = user_result.get("legacy", {}).get("screen_name", "")
 
     for media in media_list:
         if media.get("type") == "video" or media.get("type") == "animated_gif":
             video_info = media.get("video_info", {})
             variants = video_info.get("variants", [])
 
-            # Filter MP4 variants
             mp4s = [v for v in variants if v.get("content_type") == "video/mp4" and v.get("url")]
             if not mp4s:
                 continue
 
             mp4s.sort(key=lambda x: x.get("bitrate", 0), reverse=True)
 
-            # Get text/title
-            legacy = tweet.get("legacy", {})
+            # Get text
             text = legacy.get("full_text", "")
-            # Clean: remove URLs
+            if not text:
+                text = tweet.get("legacy", {}).get("full_text", "")
             text = re.sub(r'https?://\S+', '', text).strip()
             if not text:
                 text = "Twitter Video"
-
-            # Get user
-            user_result = tweet.get("core", {}).get("user_results", {}).get("result", {})
-            username = user_result.get("legacy", {}).get("screen_name", "")
 
             return {
                 "tweetId": tweet_id,
