@@ -424,7 +424,190 @@ async def health():
 
 @app.get("/")
 async def root():
-    return {"service": "GetTwittervideo", "version": "2.0", "endpoints": ["/extract?url=", "/health"]}
+    return {"service": "GetTwittervideo", "version": "2.1", "endpoints": ["/extract?url=", "/latest", "/health"]}
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# NEW: /latest — Fetch latest video tweets from the home timeline using cookies
+# ════════════════════════════════════════════════════════════════════════════════
+# Uses TWITTER_AUTH_TOKEN + TWITTER_CT0 to call the Twitter GraphQL API
+# and fetch the user's home timeline. Filters tweets with videos,
+# extracts MP4 URLs, and returns up to `count` (default 6) video tweets.
+#
+# This is the SMART approach — no hardcoded tweet IDs. It fetches REAL
+# recent tweets from the authenticated user's timeline.
+# ════════════════════════════════════════════════════════════════════════════════
+
+def fetch_home_timeline(count=20):
+    """Fetch the home timeline using Twitter GraphQL API with cookies."""
+    if not TWITTER_AUTH_TOKEN:
+        return {"error": "No TWITTER_AUTH_TOKEN configured"}
+
+    headers = {
+        "Authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhEQvF98kIBqXJ5b3Jj0V7m",
+        "Cookie": f"auth_token={TWITTER_AUTH_TOKEN}; ct0={TWITTER_CT0}",
+        "x-csrf-token": TWITTER_CT0,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Content-Type": "application/json",
+        "Accept": "*/*",
+        "Referer": "https://x.com/home",
+        "Origin": "https://x.com",
+    }
+
+    # GraphQL variables + features for HomeTimeline
+    variables = json.dumps({
+        "count": count,
+        "includePromotedContent": True,
+        "latestControlAvailable": True,
+        "requestContext": "launch",
+        "withCommunity": True,
+    })
+    features = json.dumps({
+        "rweb_tipjar_consumption_enabled": True,
+        "responsive_web_graphql_exclude_directive_enabled": True,
+        "verified_phone_label_enabled": False,
+        "creator_subscriptions_tweet_preview_ratio_enabled": False,
+        "responsive_web_graphql_timeline_navigation_enabled": True,
+        "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
+        "communities_web_enable_tweet_community_results_fetch": True,
+        "c9s_tweet_anatomy_moderator_badge_enabled": True,
+        "articles_preview_enabled": True,
+        "responsive_web_edit_tweet_api_enabled": True,
+        "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
+        "view_counts_everywhere_api_enabled": True,
+        "longform_notetweets_consumption_enabled": True,
+        "responsive_web_twitter_article_tweet_consumption_enabled": True,
+        "tweet_awards_web_tipping_enabled": False,
+        "creator_subscriptions_quote_tweet_preview_enabled": False,
+        "freedom_of_speech_not_reach_fetch_enabled": True,
+        "standardized_nudges_misinfo": True,
+        "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": True,
+        "rweb_video_timestamps_enabled": True,
+        "longform_notetweets_rich_text_read_enabled": True,
+        "longform_notetweets_inline_media_enabled": True,
+        "responsive_web_enhance_cards_enabled": False,
+    })
+
+    try:
+        resp = requests.get(
+            "https://x.com/i/api/graphql/zUOPRTMp9KrYvxOqXJdYSw/HomeTimeline",
+            headers=headers,
+            params={"variables": variables, "features": features},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return {"error": f"Twitter API returned {resp.status_code}"}
+
+        data = resp.json()
+        # Extract tweet entries from the timeline
+        instructions = (
+            data.get("data", {})
+            .get("home", {})
+            .get("home_timeline_urt", {})
+            .get("instructions", [])
+        )
+
+        tweet_entries = []
+        for instruction in instructions:
+            if instruction.get("type") == "TimelineAddEntries":
+                for entry in instruction.get("entries", []):
+                    if entry.get("entryId", "").startswith("tweet-"):
+                        tweet_data = (
+                            entry.get("content", {})
+                            .get("itemContent", {})
+                            .get("tweet_results", {})
+                            .get("result", {})
+                        )
+                        if tweet_data:
+                            tweet_entries.append(tweet_data)
+
+        return tweet_entries
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def extract_video_from_tweet_result(tweet_result):
+    """Extract video data from a GraphQL tweet result object."""
+    # The tweet might be wrapped in a TweetWithVisibilityResults type
+    if tweet_result.get("__typename") == "TweetWithVisibilityResults":
+        tweet = tweet_result.get("tweet", {})
+    else:
+        tweet = tweet_result
+
+    tweet_id = tweet.get("rest_id") or tweet.get("id_str")
+    if not tweet_id:
+        return None
+
+    # Get extended entities (contains video info)
+    ext_entities = tweet.get("extended_entities", {})
+    media_list = ext_entities.get("media", [])
+
+    for media in media_list:
+        if media.get("type") == "video" or media.get("type") == "animated_gif":
+            video_info = media.get("video_info", {})
+            variants = video_info.get("variants", [])
+
+            # Filter MP4 variants
+            mp4s = [v for v in variants if v.get("content_type") == "video/mp4" and v.get("url")]
+            if not mp4s:
+                continue
+
+            mp4s.sort(key=lambda x: x.get("bitrate", 0), reverse=True)
+
+            # Get text/title
+            legacy = tweet.get("legacy", {})
+            text = legacy.get("full_text", "")
+            # Clean: remove URLs
+            text = re.sub(r'https?://\S+', '', text).strip()
+            if not text:
+                text = "Twitter Video"
+
+            # Get user
+            user_result = tweet.get("core", {}).get("user_results", {}).get("result", {})
+            username = user_result.get("legacy", {}).get("screen_name", "")
+
+            return {
+                "tweetId": tweet_id,
+                "title": text[:200],
+                "username": username,
+                "thumbnail": media.get("media_url_https", ""),
+                "duration": round(video_info.get("duration_millis", 0) / 1000),
+                "directUrl": mp4s[0]["url"].split("?tag=")[0],
+                "qualityUrls": [
+                    {
+                        "label": f"{v.get('bitrate', 0)//1000}kbps",
+                        "url": v["url"].split("?tag=")[0],
+                        "height": 0,
+                    }
+                    for v in mp4s[:5]
+                ],
+            }
+    return None
+
+
+@app.get("/latest")
+async def latest(count: int = Query(6, ge=1, le=20)):
+    """Fetch latest video tweets from the home timeline and extract their videos."""
+    # Fetch timeline
+    timeline = fetch_home_timeline(count=count * 3)  # over-fetch to find enough videos
+
+    if isinstance(timeline, dict) and "error" in timeline:
+        return {"ok": False, "error": timeline["error"]}
+
+    # Extract videos from tweets
+    videos = []
+    for tweet_result in timeline:
+        video = extract_video_from_tweet_result(tweet_result)
+        if video:
+            videos.append(video)
+        if len(videos) >= count:
+            break
+
+    return {
+        "ok": True,
+        "count": len(videos),
+        "videos": videos,
+    }
 
 
 # ════════════════════════════════════════════════════════════════════════════════
